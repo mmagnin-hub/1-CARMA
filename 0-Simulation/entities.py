@@ -1,102 +1,48 @@
 import numpy as np
+from abc import ABC, abstractmethod
 
 # ==============================================================
 # Traveler
 # ==============================================================
-class Traveler:
-    def __init__(self, 
-                 u_low: float, 
-                 u_high: float,  
-                 phi: np.ndarray, 
-                 t_star: int,
-                 k_init: int, 
-                 d,
-                 delta_t: int,
-                 T: int,
-                 K: int,
-                 id: int,
-                 traveler_type: int = None):
 
-        # --- Fixed attributes ---
-        self.phi = phi                # transition probability matrix for urgency
-        self.t_star = t_star          # desired arrival time
-        self.u = [u_low, u_high] 
-        self.id = id
+# ==============================================================
+# Base class for shared attributes and methods
+# ==============================================================
+class TravelerBase(ABC):
+    """Abstract base for traveler entities."""
+    def __init__(self, traveler_type: int):
         self.traveler_type = traveler_type
-        self.time_slots = [i*delta_t for i in range(T)]  # time slots in minutes
 
-
-        
-        # change the name of the indices
-        u_k_t_b = [(u,k,t,b) for u in range(U) for k in range(K+1) for t in range(T) for b in range(K+1)]
-        u_k = [(u,k) for u in range(U) for k in range(K+1)]
-        t_b = [(t,b) for t in range(T) for b in range(K+1)]
-
-        # --- Change every day ---
-        self.u_curr: int = 0          # index of urgency level (0: low, 1: high)
-        self.k = k_init               # karma 
-        self.d = d                    # state distribution
-
-        self.t: int = t_star          # departure time (free flow travel time)
-        self.b: int = 0               # bid for fast lane
-
-        # Compute state transition matrix
-        U = len(self.u)
-        kappa = np.random.rand(U*(K+1)*T*(K+1), K+1)
-        kappa = [kappa_row/np.sum(kappa_row) for kappa_row in kappa]
-        self.P = np.tile(kappa, (1,U))
-        for i in range(U):
-            for j in range(U):
-                p = phi[i,j]
-                idx_i = [val[0] == i for val in u_k_t_b]
-                idx_j = [val[0] == j for val in u_k]
-                self.P[idx_i][:,idx_j] *= p
-
-        # Initialize value function, policiy, etc.
-        self.zeta = np.zeros(U*(K+1)*T*(K+1)) # by type ??
-        self.Q = np.zeros(U*(K+1)*T*(K+1))
-        self.V = np.zeros(U*(K+1)) 
-        self.pi = np.random.rand(U*(K+1), T*(K+1))
-        for i in range(len(u_k)):
-            k = u_k[i][1]
-            self.pi[i, k+1:] = 0
-        self.pi = [row/np.sum(row) for row in self.pi]
-
-    def action(self):
-        """
-        TODO: Define a better logic.
-        
-        """
-        self.t = self.t_star  
-
-        if self.u_curr == 1:
-            self.b = self.k
-        else:
-            self.b = 0
-        return 
-
-    def paid_karma_bid(self):
-        """Deduct the bid from the traveler's karma balance."""
-        self.k -= self.b
-        return
-    
-    def get_new_karma(self, karma):
-        """
-        Receive redistributed karma from the system.
-        (See System.karma_redistribution())
-        """
-        self.k += karma
-        return
-    
-    def update_urgency(self):
-        """Update urgency level based on transition matrix phi."""
-        self.u_curr = np.random.choice(len(self.u), p=self.phi[self.u_curr])
-        return 
-    
+    @abstractmethod
     def update_policy(self, system: 'System'):
-        """TODO: Define policy update logic.
-        could use type""" 
-        # How to use type here ? ... 
+        pass
+
+# ==============================================================
+# TravelerGroup (shared type-level parameters and learning)
+# ==============================================================
+class TravelerGroup(TravelerBase):
+    def __init__(self, type_id: int, phi: np.ndarray, t_star: int, u_low: float, u_high: float, K: int, T: int):
+        super().__init__(type_id)
+        self.phi = np.array(phi)
+        self.t_star = t_star
+        self.u_low = u_low
+        self.u_high = u_high
+
+        # Travelers belonging to this group
+        self.travelers: list[Traveler] = []
+
+        # Shared policy structures (group-level learning)
+        U = 2  # urgency levels
+        self.V = np.zeros((U, K+1))
+        self.Q = np.zeros((U, K+1, T))
+        self.pi = np.random.rand(U*(K+1), T)
+        self.pi = self.pi / self.pi.sum(axis=1, keepdims=True)
+
+    def register(self, traveler: 'Traveler'):
+        self.travelers.append(traveler)
+
+    def update_policy(self, system: 'System'):
+        """TODO: Define policy update logic.""" 
         delta = 0.9
         self.immediate_reward(system)
         self.Q = self.zeta + delta * np.dot(self.P, self.V)
@@ -134,9 +80,102 @@ class Traveler:
         zeta = [np.dot(-u , (psi*(t)).sum(axis=1)) for t in time]
         self.zeta = ...
         return 
-    
 
+    def __repr__(self):
+        return f"TravelerGroup(type={self.traveler_type}, n={len(self.travelers)})"
     
+# ==============================================================
+# Inidividual Traveler (agent-level state and actions)
+# ==============================================================
+class Traveler(TravelerBase):
+    def __init__(self, 
+                 group: TravelerGroup,
+                 k_init: int, 
+                 d,
+                 delta_t: int,
+                 T: int,
+                 K: int,
+                 id: int
+                 ):
+        super().__init__(group.traveler_type)
+        self.group = group
+        group.register(self)
+
+        # --- Shared (from group) ---
+        self.phi = group.phi
+        self.t_star = group.t_star
+        self.u = [group.u_low, group.u_high]
+
+        # --- Individual state ---
+        self.id = id
+        self.k = k_init
+        self.u_curr = 0
+        self.d = d
+        self.t = self.t_star
+        self.b = 0
+        self.zeta = np.zeros((2, K+1))  # per-agent reward storage
+        self.time_slots = [i * delta_t for i in range(T)]
+
+
+
+        
+        # # change the name of the indices
+        # u_k_t_b = [(u,k,t,b) for u in range(U) for k in range(K+1) for t in range(T) for b in range(K+1)]
+        # u_k = [(u,k) for u in range(U) for k in range(K+1)]
+        # t_b = [(t,b) for t in range(T) for b in range(K+1)]
+
+        # # Compute state transition matrix
+        # U = len(self.u)
+        # kappa = np.random.rand(U*(K+1)*T*(K+1), K+1)
+        # kappa = [kappa_row/np.sum(kappa_row) for kappa_row in kappa]
+        # self.P = np.tile(kappa, (1,U))
+        # for i in range(U):
+        #     for j in range(U):
+        #         p = phi[i,j]
+        #         idx_i = [val[0] == i for val in u_k_t_b]
+        #         idx_j = [val[0] == j for val in u_k]
+        #         self.P[idx_i][:,idx_j] *= p
+
+        # # Initialize value function, policiy, etc.
+        # self.zeta = np.zeros(U*(K+1)*T*(K+1)) # by type ??
+        # self.Q = np.zeros(U*(K+1)*T*(K+1))
+        # self.V = np.zeros(U*(K+1)) 
+        # self.pi = np.random.rand(U*(K+1), T*(K+1))
+        # for i in range(len(u_k)):
+        #     k = u_k[i][1]
+        #     self.pi[i, k+1:] = 0
+        # self.pi = [row/np.sum(row) for row in self.pi]
+
+    def action(self):
+        """
+        TODO: Define a better logic.
+        
+        """
+        self.t = self.t_star  
+
+        if self.u_curr == 1:
+            self.b = self.k
+        else:
+            self.b = 0
+        return 
+
+    def paid_karma_bid(self):
+        """Deduct the bid from the traveler's karma balance."""
+        self.k -= self.b
+        return
+    
+    def get_new_karma(self, karma):
+        """
+        Receive redistributed karma from the system.
+        (See System.karma_redistribution())
+        """
+        self.k += karma
+        return
+    
+    def update_urgency(self):
+        """Update urgency level based on transition matrix phi."""
+        self.u_curr = np.random.choice(len(self.u), p=self.phi[self.u_curr])
+        return     
 
 # ==============================================================
 # System
