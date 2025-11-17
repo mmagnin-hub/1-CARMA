@@ -36,11 +36,14 @@ def main():
         id_track += params["count"]
 
     # --- Initialize system ---
-    system = System(fast_lane_capacity=10, slow_lane_capacity=50) # s = fast lane + slow lane
+    system = System(fast_lane_capacity=10, slow_lane_capacity=50, K=K, T=T, travelers=travelers) # s = fast lane + slow lane
     # capacity is based on the time slot duration 
 
     # ==============================================================
-    # Simulation loop
+    # Simulation loop (3 objects)
+    # groups : list[TravelerGroup], 
+    # travelers : list[Traveler],
+    # system : System
     # ==============================================================
     n_day = 50
     for day in range(n_day):
@@ -48,18 +51,23 @@ def main():
         for traveler in travelers:
             traveler.action() 
         
-        # Sort travelers by departure time
+
+        # MM: include this step in system.cost_lane? system has an attribute self.travelers
         travelers.sort(key=attrgetter("t"))
         group_travelers = [[] for _ in range(len(time_slots))]
         for t_value, group in groupby(travelers, key=attrgetter("t")):
             group_travelers[t_value] = list(group)
 
         # --- Step 2: System reaction ---
-        costs = system.cost_lane(group_travelers)
-
+        system.cost_lane(group_travelers) 
+        # here it does too many steps 
+        # update use_fast_lane
+        # compute b_star
+        # update queue length
+        # compute immediate reward function elements
+        
         for traveler in travelers:
-            if traveler.b > system.b_star:  # took the fast lane
-                traveler.paid_karma_bid() 
+            traveler.paid_karma_bid() # now based on self.use_fast_lane
         
         system.karma_redistribution() # travelers get new karma here
 
