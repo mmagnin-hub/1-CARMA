@@ -141,9 +141,6 @@ class Traveler(TravelerBase):
         idx_col = np.random.choice(self.group.T * (self.group.K+1), p=prob)
         self.t = idx_col / (self.group.K+1)
         self.b = idx_col % (self.group.K+1)
-
-        # MM: reset fast lane usage, better place ? -> not the good place
-        self.use_fast_lane = False 
         return 
 
     def paid_karma_bid(self):
@@ -179,6 +176,7 @@ class System:
         self.slow_lane_capacity = slow_lane_capacity
         self.K = K  
         self.T = T
+        self.N = len(travelers)
 
         # Dynamic attributes
         self.b_star = np.zeros(self.T)            
@@ -194,14 +192,14 @@ class System:
         """
         total_karma_used = sum(t.b for t in self.travelers if t.use_fast_lane)
         karma_per_traveler = total_karma_used // len(self.travelers)
-        remainder = total_karma_used % len(self.travelers)  # leftover karma
-        indexes_with_extra = set(random.sample(range(len(self.travelers)), remainder))
+        leftover_karma = total_karma_used % len(self.travelers) 
+        indexes_with_extra = set(random.sample(range(len(self.travelers)), leftover_karma))
         for i, traveler in enumerate(self.travelers):
             extra = 1 if i in indexes_with_extra else 0
             traveler.get_new_karma(karma_per_traveler + extra)
         return
 
-    def cost_lane(self, group_travelers: list[list[Traveler]]):
+    def simulate_lane_queue(self):
         """
         Loop over each departure time group and compute:
         - who enters the fast vs slow lane,
@@ -211,41 +209,58 @@ class System:
         self.b_star = np.zeros(self.T)            
         self.slow_lane_queue = np.zeros(self.T)    
         self.psi = np.zeros(self.T) 
-        # for each departure time
+        for traveler in self.travelers: traveler.use_fast_lane = False
+        # sort travelers for each departure time
+        group_travelers = self.group_travelers_by_departure() 
         for t, travelers in enumerate(group_travelers): 
-            if len(travelers) == 0:
-                self.b_star[t] = 0
-                self.psi[t] = 1
-                self.update_slow_lane_queue_length(
-                    t, 0
-                )
+            if len(travelers) != 0:
+                self.b_star[t], self.psi[t]  = self.determine_threshold_bid(travelers)
+                self.assign_lanes(t, travelers)
+                count_slow_lane_users = sum(1 for traveler in travelers if not traveler.use_fast_lane)
+                self.update_queue_slow_lane(t, count_slow_lane_users)
             else:
-                self.b_star[t], self.psi[t]  = self.compute_b_star(travelers)
-                for traveler in travelers:
-                    if traveler.b > self.b_star[t]:
-                        traveler.use_fast_lane = True
-                    elif traveler.b == self.b_star[t]:
-                        traveler.use_fast_lane = ... # KZ: sample based on self.psi[t]
-                self.update_slow_lane_queue_length(
-                    t, sum(1 for traveler in travelers if not traveler.use_fast_lane)
-                )
+                self.b_star[t], self.psi[t] = 0, 1
+                self.update_queue_slow_lane(t, 0)
         return 
     
-    def compute_b_star(self, travelers: list[Traveler]):
+    def group_travelers_by_departure(self):
+        """
+        Create a list of travelers for each departure time slot.
+        """
+        group_travelers = [[] for _ in range(self.T)]
+        for traveler in self.travelers:
+            group_travelers[traveler.t].append(traveler)
+        return group_travelers
+
+    def determine_threshold_bid(self, travelers: list[Traveler]):
         """
         Compute threshold bid (b_star) for the fast lane.
-
         """
         bids = sorted([traveler.b for traveler in travelers], reverse=True)
         if len(bids) > self.fast_lane_capacity:
             b_star = bids[self.fast_lane_capacity - 1]
-            psi = ... # KZ: get probability of getting into fast lane if someone bids b_star
+            # MM: check this with KZ especially : s_fast / N 
+            traveler_count_at_b_star = sum(1 for traveler in travelers if traveler.b == b_star)
+            traveler_count_over_b_star = sum(1 for traveler in travelers if traveler.b > b_star)
+            psi = (self.fast_lane_capacity/self.N - traveler_count_over_b_star)/traveler_count_at_b_star
         else:
             b_star = bids[-1]
             psi = 1
         return b_star, psi
-
-    def update_slow_lane_queue_length(self, t:int, inflow: int):
+    
+    def assign_lanes(self, t, travelers):
+        '''
+        Update each traveler's lane choice (use_fast_lane) based on b_star and psi.
+        '''
+        for traveler in travelers:
+            if traveler.b > self.b_star[t]:
+                traveler.use_fast_lane = True
+            elif traveler.b == self.b_star[t]:
+                # MM: How to ensure that it doesn't create queue ?
+                traveler.use_fast_lane = random.random() < self.psi[t]
+        return
+    
+    def update_queue_slow_lane(self, t:int, inflow: int):
         """
         Simple bottleneck model for the slow lane.
 
@@ -258,3 +273,7 @@ class System:
         else:
           self.slow_lane_queue[t] = max(0, self.slow_lane_queue[t-1] - (capacity - inflow))
         return
+
+
+
+

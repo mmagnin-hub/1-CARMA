@@ -50,28 +50,18 @@ def main():
         # --- Step 1: Each traveler acts and bids ---
         for traveler in travelers:
             traveler.action() 
-        
-
-        # MM: include this step in system.cost_lane? system has an attribute self.travelers
-        travelers.sort(key=attrgetter("t"))
-        group_travelers = [[] for _ in range(len(time_slots))]
-        for t_value, group in groupby(travelers, key=attrgetter("t")):
-            group_travelers[t_value] = list(group)
 
         # --- Step 2: System reaction ---
-        system.cost_lane(group_travelers) 
-        # here it does too many steps 
-        # update use_fast_lane
-        # compute b_star
-        # update queue length
-        # compute immediate reward function elements
-        
-        for traveler in travelers:
-            traveler.paid_karma_bid() # now based on self.use_fast_lane
-        
-        system.karma_redistribution() # travelers get new karma here
+        system.simulate_lane_queue() 
 
-        # --- Step 3: Update traveler states and policies ---
+        # -- Step 3: Travelers pay their karma bids ---
+        for traveler in travelers:
+            traveler.paid_karma_bid() 
+        
+        # -- Step 4: System redistributes karma ---
+        system.karma_redistribution() 
+
+        # --- Step 5: Update traveler policies and urgency---
         for group in groups:
             group.update_policy()   
 
