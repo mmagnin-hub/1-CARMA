@@ -61,12 +61,13 @@ def main():
         # -- Step 4: System redistributes karma ---
         system.karma_redistribution() 
 
-        # --- Step 5: Update traveler policies and urgency---
-        for group in groups:
-            group.update_policy()   
-
+        # --- Step 5: Update traveler urgency and policies---
         for traveler in travelers:
             traveler.update_urgency()
+        for group in groups:
+            group.update_policy()  
+
+
         
 
 if __name__ == "__main__":

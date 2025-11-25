@@ -33,7 +33,7 @@ class TravelerGroup(TravelerBase):
         self.u_value = np.array(u_value)
         self.delta = delta
         self.eta = eta  
-        self.U = len(self.u_state) # MM: check that len(array) works
+        self.U = self.u_state.shape[0]
         self.K = K
         self.T = T
         self.alpha = alpha
@@ -51,18 +51,39 @@ class TravelerGroup(TravelerBase):
             k = i % (self.K+1)
             self.pi[i, k+1:] = 0
         self.pi = self.pi / self.pi.sum(axis=1, keepdims=True)
+######################### VERIFICATION #############################################
+        self.P = np.zeros((self.U * (self.K+1), self.U * (self.K+1)))
+        for u_from in range(self.U):
+            row_idx_start = u_from * (self.K+1) 
+            row_idx_end = row_idx_start + (self.K+1)
+            for u_to in range(self.U):
+                col_idx_start = u_to * (self.K+1)
+                col_idx_end = col_idx_start + (self.K+1)
+                self.P[row_idx_start:row_idx_end, col_idx_start:col_idx_end] = self.phi[u_from, u_to] / (self.K+1)  
+        self.simulated_P = np.zeros((self.U * (self.K+1), self.U * (self.K+1)))
+###################################################################################
 
     def register(self, traveler: 'Traveler'):
         self.travelers.append(traveler)
 
     def update_policy(self, system: 'System'):
+####################### VERIFICATION ##############################################
+        # update transition matrix
+        for row in range(self.simulated_P.shape[0]):
+            row_sum = self.simulated_P[row, :].sum()
+            if row_sum > 0:
+                self.simulated_P[row, :] /= row_sum
+        self.P = 0.5* (self.P + self.simulated_P)
+        self.simulated_P[:] = 0
+###################################################################################
+
         # Computing the expected total reward from state (u,k) taking action (t,b)
         self.immediate_reward(system)
-        self.Q = self.zeta + self.delta * np.dot(self.P, self.V) # MM: self.P to be defined
+        self.Q = self.zeta + self.delta * np.dot(self.P, self.V)
         
         # update policy
         new_pi = self.policiy_logit()
-        self.pi = (1 - self.eta) * self.pi + self.eta * new_pi
+        self.pi = (1 - self.eta) * self.pi + self.eta * new_pi # smoothing
 
         # update value
         Q_reshape = self.Q.reshape(self.U*(self.K+1), self.T*(self.K+1))
@@ -71,13 +92,16 @@ class TravelerGroup(TravelerBase):
         return
     
     def immediate_reward(self, system: 'System'):
+        '''
+        TODO: add more matrix calculations to optimize
+        '''
         # compute zeta
         for u in range(self.U):
           for k in range(self.K+1):
             for t in range(self.T):
               for b in range(self.K+1):
-                idx = u * (self.K+1) * self.T * (self.K+1) + k * self.T * (self.K+1) + t * (self.K+1) + b # MM : check with KZ
-                if b > system.b_star[t]:
+                idx = u * (self.K+1) * self.T * (self.K+1) + k * self.T * (self.K+1) + t * (self.K+1) + b 
+                if b > system.b_star[t]: 
                   if t <= self.t_star:
                     self.zeta[idx] = -self.u_value[u] * np.abs(t - self.t_star) * self.beta # fast lane + early
                   else:
@@ -158,8 +182,16 @@ class Traveler(TravelerBase):
         return
     
     def update_urgency(self):
-        """Update urgency level based on transition matrix phi."""
+        """Update urgency level based on transition matrix phi. And update the simulated transition probability matrix."""
+############################# VERIFICATION ########################################
+        if self.use_fast_lane:
+           idx_state_init = self.u_curr *(self.group.K + 1) + self.k_curr + self.b
+        else:
+           idx_state_init = self.u_curr *(self.group.K + 1) + self.k_curr
         self.u_curr = np.random.choice(self.group.U, p=self.group.phi[self.u_curr])
+        idx_state_final = self.u_curr *(self.group.K + 1) + self.k_curr 
+        self.group.simulated_P[idx_state_init,idx_state_final] += 1
+###################################################################################
         return     
 
 # ==============================================================
@@ -190,7 +222,7 @@ class System:
         TODO: 
         - Later : redistribute based on traveler states.
         """
-        total_karma_used = sum(t.b for t in self.travelers if t.use_fast_lane)
+        total_karma_used = sum(traveler.b for traveler in self.travelers if traveler.use_fast_lane)
         karma_per_traveler = total_karma_used // len(self.travelers)
         leftover_karma = total_karma_used % len(self.travelers) 
         indexes_with_extra = set(random.sample(range(len(self.travelers)), leftover_karma))
@@ -242,7 +274,7 @@ class System:
             # MM: check this with KZ especially : s_fast / N 
             traveler_count_at_b_star = sum(1 for traveler in travelers if traveler.b == b_star)
             traveler_count_over_b_star = sum(1 for traveler in travelers if traveler.b > b_star)
-            psi = (self.fast_lane_capacity/self.N - traveler_count_over_b_star)/traveler_count_at_b_star
+            psi = (self.fast_lane_capacity/self.N - traveler_count_over_b_star)/traveler_count_at_b_star # MM = free spot at b_star / total traveler at b_star
         else:
             b_star = bids[-1]
             psi = 1
@@ -257,7 +289,7 @@ class System:
                 traveler.use_fast_lane = True
             elif traveler.b == self.b_star[t]:
                 # MM: How to ensure that it doesn't create queue ?
-                traveler.use_fast_lane = random.random() < self.psi[t]
+                traveler.use_fast_lane = random.random() < self.psi[t] # MM: add a warning print
         return
     
     def update_queue_slow_lane(self, t:int, inflow: int):
