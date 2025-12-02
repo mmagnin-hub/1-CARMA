@@ -14,10 +14,6 @@ class TravelerBase(ABC):
     def __init__(self, traveler_type: int):
         self.traveler_type = traveler_type
 
-    @abstractmethod
-    def update_policy(self, system: 'System'):
-        pass
-
 # ==============================================================
 # TravelerGroup (shared type-level parameters and learning)
 # ==============================================================
@@ -33,7 +29,7 @@ class TravelerGroup(TravelerBase):
         self.u_value = np.array(u_value)
         self.delta = delta
         self.eta = eta  
-        self.U = self.u_state.shape[0]
+        self.U = self.u_value.shape[0]
         self.K = K
         self.T = T
         self.alpha = alpha
@@ -51,7 +47,7 @@ class TravelerGroup(TravelerBase):
             k = i % (self.K+1)
             self.pi[i, k+1:] = 0
         self.pi = self.pi / self.pi.sum(axis=1, keepdims=True)
-######################### VERIFICATION #############################################
+        ######################### VERIFICATION #############################################
         self.P = np.zeros((self.U * (self.K+1), self.U * (self.K+1)))
         for u_from in range(self.U):
             row_idx_start = u_from * (self.K+1) 
@@ -61,13 +57,21 @@ class TravelerGroup(TravelerBase):
                 col_idx_end = col_idx_start + (self.K+1)
                 self.P[row_idx_start:row_idx_end, col_idx_start:col_idx_end] = self.phi[u_from, u_to] / (self.K+1)  
         self.simulated_P = np.zeros((self.U * (self.K+1), self.U * (self.K+1)))
-###################################################################################
+        ###################################################################################
 
     def register(self, traveler: 'Traveler'):
         self.travelers.append(traveler)
 
-    def update_policy(self, system: 'System'):
-####################### VERIFICATION ##############################################
+    def update_transition_matrix(self):
+        '''
+        Update the transition matrix P based on simulated transitions.
+        '''
+        ############################# VERIFICATION ########################################
+        for traveler in self.travelers:
+            idx_state_init = traveler.u_start *(self.K + 1) + traveler.k_start 
+            idx_state_final = traveler.u_curr *(self.K + 1) + traveler.k_curr
+            self.simulated_P[idx_state_init,idx_state_final] += 1
+
         # update transition matrix
         for row in range(self.simulated_P.shape[0]):
             row_sum = self.simulated_P[row, :].sum()
@@ -75,20 +79,22 @@ class TravelerGroup(TravelerBase):
                 self.simulated_P[row, :] /= row_sum
         self.P = 0.5* (self.P + self.simulated_P)
         self.simulated_P[:] = 0
-###################################################################################
-
+        ###################################################################################
+        return
+    
+    def update_policy(self, system: 'System'):
         # Computing the expected total reward from state (u,k) taking action (t,b)
         self.immediate_reward(system)
-        self.Q = self.zeta + self.delta * np.dot(self.P, self.V)
+        V_reshape = np.repeat(self.V, self.T * (self.K + 1)).reshape(self.U*(self.K+1), self.T*(self.K+1)) # MM : check for the shape behavior
+        self.Q = self.zeta + self.delta * np.dot(self.P, V_reshape).flatten()
         
         # update policy
         new_pi = self.policiy_logit()
         self.pi = (1 - self.eta) * self.pi + self.eta * new_pi # smoothing
 
         # update value
-        Q_reshape = self.Q.reshape(self.U*(self.K+1), self.T*(self.K+1))
-        pi_reshape = self.pi.reshape(self.U*(self.K+1), self.T*(self.K+1))
-        self.V = np.sum(Q_reshape * pi_reshape, axis=1)
+        Q_reshape = self.Q.reshape(self.U*(self.K+1), self.T*(self.K+1)) # MM : check  for the shape behavior
+        self.V = np.sum(Q_reshape * self.pi, axis=1)
         return
     
     def immediate_reward(self, system: 'System'):
@@ -155,7 +161,9 @@ class Traveler(TravelerBase):
         # Dynamic attributes
         self.u_curr = 0
         self.k_curr = k_init 
-        self.t = self.t_star
+        self.u_start = 0
+        self.k_start = 0
+        self.t: int = self.group.t_star
         self.b = 0
         self.use_fast_lane: bool = False
 
@@ -163,8 +171,8 @@ class Traveler(TravelerBase):
         idx_row = self.u_curr * (self.group.K+1) + self.k_curr
         prob = self.group.pi[idx_row]
         idx_col = np.random.choice(self.group.T * (self.group.K+1), p=prob)
-        self.t = idx_col / (self.group.K+1)
-        self.b = idx_col % (self.group.K+1)
+        self.t = idx_col // (self.group.K+1)
+        self.b = idx_col % (self.group.K+1) # MM : how to prevent bidding more karma than current balance ? -> already in pi ? 
         return 
 
     def paid_karma_bid(self):
@@ -182,17 +190,16 @@ class Traveler(TravelerBase):
         return
     
     def update_urgency(self):
-        """Update urgency level based on transition matrix phi. And update the simulated transition probability matrix."""
-############################# VERIFICATION ########################################
-        if self.use_fast_lane:
-           idx_state_init = self.u_curr *(self.group.K + 1) + self.k_curr + self.b
-        else:
-           idx_state_init = self.u_curr *(self.group.K + 1) + self.k_curr
+        """Update urgency level based on transition matrix phi."""
         self.u_curr = np.random.choice(self.group.U, p=self.group.phi[self.u_curr])
-        idx_state_final = self.u_curr *(self.group.K + 1) + self.k_curr 
-        self.group.simulated_P[idx_state_init,idx_state_final] += 1
-###################################################################################
-        return     
+        return   
+
+    def store_start_state(self):
+        """ Store start of the day to compare at the end of the day. """
+        self.u_start = self.u_curr
+        self.k_start = self.k_curr  
+        return
+
 
 # ==============================================================
 # System
@@ -271,10 +278,10 @@ class System:
         bids = sorted([traveler.b for traveler in travelers], reverse=True)
         if len(bids) > self.fast_lane_capacity:
             b_star = bids[self.fast_lane_capacity - 1]
-            # MM: check this with KZ especially : s_fast / N 
             traveler_count_at_b_star = sum(1 for traveler in travelers if traveler.b == b_star)
             traveler_count_over_b_star = sum(1 for traveler in travelers if traveler.b > b_star)
-            psi = (self.fast_lane_capacity/self.N - traveler_count_over_b_star)/traveler_count_at_b_star # MM = free spot at b_star / total traveler at b_star
+            free_spot_at_b_star = self.fast_lane_capacity - traveler_count_over_b_star
+            psi = free_spot_at_b_star/traveler_count_at_b_star 
         else:
             b_star = bids[-1]
             psi = 1

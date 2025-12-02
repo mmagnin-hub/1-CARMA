@@ -1,43 +1,84 @@
-from itertools import groupby
-from operator import attrgetter
 from entities import TravelerGroup, Traveler, System
+import numpy as np
+import random
 
 def main():
-    # ==============================================================
-    # Define types of travelers and system
-    # ==============================================================
-    delta_t = 5  # time slot duration in minutes
-    T = 36  # number of time slots in a day from 0 to T-1 => 3 hours
-    time_slots = [i*delta_t for i in range(T)]  # time slots in minutes
-    k_init = 10 # initial karma for each traveler
-    N = 100  # total number of travelers
-    K = N * k_init  # total initial karma in the system <=> maximum number of karma a user can have
-    
-    types = [
-        {"type": 0, "phi": [[0.8,0.2],[0.8,0.2]], "t_star": 8, "u_low": 10, "u_high": 20, "count": 50},
-        {"type": 1, "phi": [[0.8,0.2],[0.8,0.2]], "t_star": 8, "u_low": 15, "u_high": 30, "count": 30},
-        {"type": 2, "phi": [[0.8,0.2],[0.8,0.2]], "t_star": 9, "u_low": 20, "u_high": 40, "count": 20},
-    ]
+    # -------------------------------------------------------------
+    # 1. Define model dimensions and parameters
+    # -------------------------------------------------------------
+    U = 3                  # number of urgency levels
+    K = 100                # max karma
+    T = 6                  # number of departure time slots
+    delta_t = 1            # duration of each time slot
 
-    # --- Initialize traveler groups ---
-    groups = [
-        TravelerGroup(p["type"], p["phi"], p["t_star"], p["u_low"], p["u_high"], K, T)
-        for p in types
-    ]
+    n_types = 1            # number of traveler groups
+    n_travelers = 2       # total number of travelers
 
-    # --- Initialize travelers ---
+    # -------------------------------------------------------------
+    # 2. Create group-level parameters
+    # -------------------------------------------------------------
+    phi = np.array([       # urgency transition matrix (U×U)
+        [0.7, 0.2, 0.1],
+        [0.3, 0.4, 0.3],
+        [0.2, 0.3, 0.5]
+    ])
+
+    u_value = np.array([1.0, 2.0, 3.0])  # utility weights for urgency levels
+    t_star = 4                           # preferred time
+    delta = 0.9                          # discount factor
+    eta = 0.1                            # smoothing parameter for policy
+    alpha = beta = gamma = 42            # penalty parameters
+
+    # -------------------------------------------------------------
+    # 3. Create TravelerGroup(s)
+    # -------------------------------------------------------------
+    groups = []
+
+    group = TravelerGroup(
+        type_id=0,
+        phi=phi,
+        t_star=t_star,
+        u_value=u_value,
+        K=K,
+        T=T,
+        delta=delta,
+        eta=eta,
+        alpha=alpha,
+        beta=beta,
+        gamma=gamma
+    )
+
+    groups.append(group)
+
+    # -------------------------------------------------------------
+    # 4. Create Travelers and assign them to the group
+    # -------------------------------------------------------------
     travelers = []
-    id_track = 0
-    for group, params in zip(groups, types):
-        for i in range(params["count"]):
-            travelers.append(
-                Traveler(group, k_init, d=None, delta_t=delta_t, T=T, K=K, id=id_track + i)
-            )
-        id_track += params["count"]
+    for i in range(n_travelers):
+        k_init = K // n_travelers # MM : if there is a remainder ? -> ignored for now
+        traveler = Traveler(
+            group=group,
+            k_init=k_init,
+            delta_t=delta_t,
+            id=i
+        )
+        travelers.append(traveler)
 
-    # --- Initialize system ---
-    system = System(fast_lane_capacity=10, slow_lane_capacity=50, K=K, T=T, travelers=travelers) # s = fast lane + slow lane
-    # capacity is based on the time slot duration 
+    # -------------------------------------------------------------
+    # 5. Initialize the System
+    # -------------------------------------------------------------
+    fast_lane_capacity = 5
+    slow_lane_capacity = 10
+
+    system = System(
+        fast_lane_capacity=fast_lane_capacity,
+        slow_lane_capacity=slow_lane_capacity,
+        K=K,
+        T=T,
+        travelers=travelers
+    )
+
+
 
     # ==============================================================
     # Simulation loop (3 objects)
@@ -47,9 +88,12 @@ def main():
     # ==============================================================
     n_day = 50
     for day in range(n_day):
+        print("----- Day", day, "-----")
         # --- Step 1: Each traveler acts and bids ---
         for traveler in travelers:
+            traveler.store_start_state() 
             traveler.action() 
+            print("Traveler ID:", traveler.id, "Action t:", traveler.t, " b:", traveler.b, " Urgency:", traveler.u_curr, " Karma:", traveler.k_curr)
 
         # --- Step 2: System reaction ---
         system.simulate_lane_queue() 
@@ -64,8 +108,10 @@ def main():
         # --- Step 5: Update traveler urgency and policies---
         for traveler in travelers:
             traveler.update_urgency()
+
         for group in groups:
-            group.update_policy()  
+            group.update_transition_matrix()
+            group.update_policy(system)  
 
 
         
