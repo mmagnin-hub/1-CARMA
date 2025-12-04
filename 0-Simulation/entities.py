@@ -43,9 +43,11 @@ class TravelerGroup(TravelerBase):
         self.V = np.zeros((self.U * (self.K+1)))
         self.Q = np.zeros((self.U * (self.K+1) * self.T * (self.K+1)))
         self.pi = np.random.rand(self.U * (self.K+1), self.T * (self.K+1))
+        self.action_mask = np.zeros_like(self.pi)
         for i in range(self.U * (self.K+1)):
             k = i % (self.K+1)
-            self.pi[i, k+1:] = 0
+            self.action_mask[i, :k+1] = 1
+            self.pi[i, k+1:] = 0 # cannot bid more karma than current balance
         self.pi = self.pi / self.pi.sum(axis=1, keepdims=True)
         ######################### VERIFICATION #############################################
         self.P = np.zeros((self.U * (self.K+1), self.U * (self.K+1)))
@@ -70,7 +72,7 @@ class TravelerGroup(TravelerBase):
         for traveler in self.travelers:
             idx_state_init = traveler.u_start *(self.K + 1) + traveler.k_start 
             idx_state_final = traveler.u_curr *(self.K + 1) + traveler.k_curr
-            self.simulated_P[idx_state_init,idx_state_final] += 1
+            self.simulated_P[idx_state_init,idx_state_final] += 1 # MM it crashes here because of index out of bound
 
         # update transition matrix
         for row in range(self.simulated_P.shape[0]):
@@ -130,7 +132,13 @@ class TravelerGroup(TravelerBase):
 
     def policiy_logit(self):
         Q_mtx = self.Q.reshape(self.pi.shape)
-        pi = np.exp(Q_mtx)/np.sum(np.exp(Q_mtx), axis=1).reshape(-1,1)
+
+        # Large negative penalty for impossible actions
+        masked_Q = np.where(self.action_mask, Q_mtx, -1e12)
+
+        expQ = np.exp(masked_Q - np.max(masked_Q, axis=1, keepdims=True))
+        pi = expQ / expQ.sum(axis=1, keepdims=True)
+
         return pi
     
     def __repr__(self):

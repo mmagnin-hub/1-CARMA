@@ -12,7 +12,7 @@ def main():
     delta_t = 1            # duration of each time slot
 
     n_types = 1            # number of traveler groups
-    n_travelers = 2       # total number of travelers
+    n_travelers = 20       # total number of travelers
 
     # -------------------------------------------------------------
     # 2. Create group-level parameters
@@ -24,7 +24,7 @@ def main():
     ])
 
     u_value = np.array([1.0, 2.0, 3.0])  # utility weights for urgency levels
-    t_star = 4                           # preferred time
+    t_star = 3                           # preferred time
     delta = 0.9                          # discount factor
     eta = 0.1                            # smoothing parameter for policy
     alpha = beta = gamma = 42            # penalty parameters
@@ -94,6 +94,8 @@ def main():
             traveler.store_start_state() 
             traveler.action() 
             print("Traveler ID:", traveler.id, "Action t:", traveler.t, " b:", traveler.b, " Urgency:", traveler.u_curr, " Karma:", traveler.k_curr)
+            if traveler.k_curr > K or traveler.k_curr < 0:
+                print("Error: Traveler", traveler.id, "has invalid karma balance:", traveler.k_curr)
 
         # --- Step 2: System reaction ---
         system.simulate_lane_queue() 
@@ -101,6 +103,9 @@ def main():
         # -- Step 3: Travelers pay their karma bids ---
         for traveler in travelers:
             traveler.paid_karma_bid() 
+            if traveler.use_fast_lane == False and traveler.t + system.slow_lane_queue[traveler.t] > traveler.group.t_star or traveler.t > traveler.group.t_star:
+                print("Traveler ID:", traveler.id, "missed preferred time! Departure time:", traveler.t + system.slow_lane_queue[traveler.t], " Preferred time:", traveler.group.t_star)
+                
         
         # -- Step 4: System redistributes karma ---
         system.karma_redistribution() 
