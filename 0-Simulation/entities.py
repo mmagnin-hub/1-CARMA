@@ -42,24 +42,19 @@ class TravelerGroup(TravelerBase):
         self.zeta = np.zeros((self.U * (self.K+1) * self.T * (self.K+1))) 
         self.V = np.zeros((self.U * (self.K+1)))
         self.Q = np.zeros((self.U * (self.K+1) * self.T * (self.K+1)))
+        self.P = np.zeros((self.U * (self.K+1) * self.T * (self.K+1), self.U * (self.K+1)))
         self.pi = np.random.rand(self.U * (self.K+1), self.T * (self.K+1))
-        self.action_mask = np.zeros_like(self.pi)
-        for i in range(self.U * (self.K+1)):
+        self.action_mask = np.zeros_like(self.pi) # action_mask: 1 if action is allowed, 0 otherwise
+        for i in range(self.U * (self.K+1)): 
             k = i % (self.K+1)
-            self.action_mask[i, :k+1] = 1
-            self.pi[i, k+1:] = 0 # cannot bid more karma than current balance
+            for t in range(self.T):
+                for b in range(self.K + 1):
+                    action_index = t*(self.K+1) + b
+                    if b <= k:  
+                        self.action_mask[i, action_index] = 1
+        self.pi *= self.action_mask
         self.pi = self.pi / self.pi.sum(axis=1, keepdims=True)
-        ######################### VERIFICATION #############################################
-        self.P = np.zeros((self.U * (self.K+1), self.U * (self.K+1)))
-        for u_from in range(self.U):
-            row_idx_start = u_from * (self.K+1) 
-            row_idx_end = row_idx_start + (self.K+1)
-            for u_to in range(self.U):
-                col_idx_start = u_to * (self.K+1)
-                col_idx_end = col_idx_start + (self.K+1)
-                self.P[row_idx_start:row_idx_end, col_idx_start:col_idx_end] = self.phi[u_from, u_to] / (self.K+1)  
-        self.simulated_P = np.zeros((self.U * (self.K+1), self.U * (self.K+1)))
-        ###################################################################################
+
 
     def register(self, traveler: 'Traveler'):
         self.travelers.append(traveler)
@@ -68,34 +63,36 @@ class TravelerGroup(TravelerBase):
         '''
         Update the transition matrix P based on simulated transitions.
         '''
-        ############################# VERIFICATION ########################################
+        self.P.fill(0.0)  # KZ: reinit transition
         for traveler in self.travelers:
-            idx_state_init = traveler.u_start *(self.K + 1) + traveler.k_start 
-            idx_state_final = traveler.u_curr *(self.K + 1) + traveler.k_curr
-            self.simulated_P[idx_state_init,idx_state_final] += 1 # MM it crashes here because of index out of bound
+            idx_state_init = traveler.u_start * ((self.K+1) * self.T * (self.K+1)) + traveler.k_start * (self.T * (self.K+1)) + traveler.t * (self.K+1) + traveler.b
+            idx_state_final = traveler.u_curr *(self.K+1) + traveler.k_curr
+            self.P[idx_state_init,idx_state_final] += 1
 
         # update transition matrix
-        for row in range(self.simulated_P.shape[0]):
-            row_sum = self.simulated_P[row, :].sum()
+        for row in range(self.P.shape[0]):
+            row_sum = self.P[row, :].sum()
             if row_sum > 0:
-                self.simulated_P[row, :] /= row_sum
-        self.P = 0.5* (self.P + self.simulated_P)
-        self.simulated_P[:] = 0
-        ###################################################################################
+                self.P[row, :] /= row_sum
+
         return
     
     def update_policy(self, system: 'System'):
         # Computing the expected total reward from state (u,k) taking action (t,b)
         self.immediate_reward(system)
-        V_reshape = np.repeat(self.V, self.T * (self.K + 1)).reshape(self.U*(self.K+1), self.T*(self.K+1)) # MM : check for the shape behavior
-        self.Q = self.zeta + self.delta * np.dot(self.P, V_reshape).flatten()
-        
+        self.Q = self.zeta + self.delta * np.dot(self.P, self.V)
+        # # KZ: smooth Q-value instead of policy
+        # new_Q = self.zeta + self.delta * np.dot(self.P, self.V)
+        # self.Q = (1 - self.eta) * self.Q + self.eta * new_Q
+
         # update policy
-        new_pi = self.policiy_logit()
+        new_pi = self.policy_logit()
         self.pi = (1 - self.eta) * self.pi + self.eta * new_pi # smoothing
+        # # KZ: use smoothed Q-value to compute policy
+        # self.pi = self.policy_logit()
 
         # update value
-        Q_reshape = self.Q.reshape(self.U*(self.K+1), self.T*(self.K+1)) # MM : check  for the shape behavior
+        Q_reshape = self.Q.reshape(self.U*(self.K+1), self.T*(self.K+1)) 
         self.V = np.sum(Q_reshape * self.pi, axis=1)
         return
     
@@ -103,42 +100,94 @@ class TravelerGroup(TravelerBase):
         '''
         TODO: add more matrix calculations to optimize
         '''
-        # compute zeta
-        for u in range(self.U):
-          for k in range(self.K+1):
-            for t in range(self.T):
-              for b in range(self.K+1):
-                idx = u * (self.K+1) * self.T * (self.K+1) + k * self.T * (self.K+1) + t * (self.K+1) + b 
-                if b > system.b_star[t]: 
-                  if t <= self.t_star:
-                    self.zeta[idx] = -self.u_value[u] * np.abs(t - self.t_star) * self.beta # fast lane + early
-                  else:
-                    self.zeta[idx] = -self.u_value[u] * np.abs(t - self.t_star) * self.gamma # fast lane + late
-                elif b == system.b_star[t]:
-                  if t <= self.t_star:
-                    zeta_fast_lane = -self.u_value[u] * np.abs(t - self.t_star) * self.beta
-                    zeta_slow_lane = -self.u_value[u] * (np.abs(t - self.t_star) * self.beta + system.slow_lane_queue[t] * self.alpha)
-                    self.zeta[idx] = zeta_fast_lane * system.psi[t] + zeta_slow_lane * (1-system.psi[t]) # limit between fast/slow lane + early 
-                  else:
-                    zeta_fast_lane = -self.u_value[u] * np.abs(t - self.t_star) * self.gamma
-                    zeta_slow_lane = -self.u_value[u] * (np.abs(t - self.t_star) * self.gamma + system.slow_lane_queue[t] * self.alpha)
-                    self.zeta[idx] = zeta_fast_lane * system.psi[t] + zeta_slow_lane * (1-system.psi[t]) # limit between fast/slow lane + late
-                else:
-                  if t <= self.t_star:
-                    self.zeta[idx] = -self.u_value[u] * (np.abs(t - self.t_star) * self.beta + system.slow_lane_queue[t] * self.alpha) # slow lane + early
-                  else:
-                    self.zeta[idx] = -self.u_value[u] * (np.abs(t - self.t_star) * self.gamma + system.slow_lane_queue[t] * self.alpha) # slow lane + late
+        # OLD version (slow)
+        # # compute zeta
+        # for u in range(self.U):
+        #   for k in range(self.K+1):
+        #     for t in range(self.T):
+        #       for b in range(self.K+1):
+        #         idx = u * (self.K+1) * self.T * (self.K+1) + k * self.T * (self.K+1) + t * (self.K+1) + b 
+        #         if b > system.b_star[t]: 
+        #           if t <= self.t_star:
+        #             self.zeta[idx] = -self.u_value[u] * np.abs(t - self.t_star) * self.beta # fast lane + early
+        #           else:
+        #             self.zeta[idx] = -self.u_value[u] * np.abs(t - self.t_star) * self.gamma # fast lane + late
+        #         elif b == system.b_star[t]:
+        #           if t <= self.t_star:
+        #             zeta_fast_lane = -self.u_value[u] * np.abs(t - self.t_star) * self.beta
+        #             zeta_slow_lane = -self.u_value[u] * (np.abs(t - self.t_star) * self.beta + system.slow_lane_queue[t] * self.alpha)
+        #             self.zeta[idx] = zeta_fast_lane * system.psi[t] + zeta_slow_lane * (1-system.psi[t]) # limit between fast/slow lane + early 
+        #           else:
+        #             zeta_fast_lane = -self.u_value[u] * np.abs(t - self.t_star) * self.gamma
+        #             zeta_slow_lane = -self.u_value[u] * (np.abs(t - self.t_star) * self.gamma + system.slow_lane_queue[t] * self.alpha)
+        #             self.zeta[idx] = zeta_fast_lane * system.psi[t] + zeta_slow_lane * (1-system.psi[t]) # limit between fast/slow lane + late
+        #         else:
+        #           if t <= self.t_star:
+        #             self.zeta[idx] = -self.u_value[u] * (np.abs(t - self.t_star) * self.beta + system.slow_lane_queue[t] * self.alpha) # slow lane + early
+        #           else:
+        #             self.zeta[idx] = -self.u_value[u] * (np.abs(t - self.t_star) * self.gamma + system.slow_lane_queue[t] * self.alpha) # slow lane + late
+
+
+        # Precompute absolute time distance
+        dt = np.abs(np.arange(self.T) - self.t_star)            # shape (T,)
+        early_mask = np.arange(self.T) <= self.t_star           # shape (T,)
+
+        # Expand for broadcasting
+        dt_exp = dt[None, None, :, None]                   # shape (1,1,T,1)
+        slowQ  = system.slow_lane_queue[None, None, :, None]
+        psi    = system.psi[None, None, :, None]
+
+        # u values
+        u_val = self.u_value[:, None, None, None]          # shape (U,1,1,1)
+
+        # Time-dependent betas/gammas
+        beta_t = np.where(early_mask, self.beta, self.gamma)[None,None,:,None]
+
+        # Compute the base fast-lane and slow-lane costs
+        fast_lane = -u_val * dt_exp * beta_t               # shape (U,K1,T,K1)
+        slow_lane = -u_val * (dt_exp * beta_t + slowQ * self.alpha)
+
+        # Combine them for the boundary case (b == b*)
+        mixed_lane = fast_lane * psi + slow_lane * (1 - psi)
+
+        # Create b and b_star arrays for comparison
+        b_vals = np.arange(self.K + 1)[None, None, None, :]        # shape (1,1,1,K1)
+        b_vals = np.broadcast_to(b_vals, (self.U, self.K+1, self.T, self.K+1))  # shape (U,K1,T,K1)
+
+        b_star = system.b_star[None, None, :, None]        # shape (1,1,T,1)
+        b_star = np.broadcast_to(b_star, (self.U, self.K+1, self.T, self.K+1))  # shape (U,K1,T,K1)
+
+        # Masks for the three block conditions
+        mask_faster  = b_vals > b_star
+        mask_equal   = b_vals == b_star
+        mask_slower  = b_vals < b_star
+
+        # fast lane / slow lane shapes must match zeta shape (U,K1,T,K1)
+        fast_lane = np.broadcast_to(fast_lane, (self.U, self.K+1, self.T, self.K+1))
+        slow_lane = np.broadcast_to(slow_lane, (self.U, self.K+1, self.T, self.K+1))
+        mixed_lane = np.broadcast_to(mixed_lane, (self.U, self.K+1, self.T, self.K+1))
+
+        # Allocate output
+        zeta = np.zeros((self.U, self.K+1, self.T, self.K+1))
+
+        # Fill blocks (fast & vectorized)
+        zeta[mask_faster] = fast_lane[mask_faster]     # b > b*(t)
+        zeta[mask_equal]  = mixed_lane[mask_equal]     # b = b*(t)
+        zeta[mask_slower] = slow_lane[mask_slower]     # b < b*(t)
+
+        self.zeta = zeta.reshape(-1)
+
         return 
 
-    def policiy_logit(self):
+    def policy_logit(self):
         Q_mtx = self.Q.reshape(self.pi.shape)
+        pi = np.zeros(self.pi.shape)
 
-        # Large negative penalty for impossible actions
-        masked_Q = np.where(self.action_mask, Q_mtx, -1e12)
-
-        expQ = np.exp(masked_Q - np.max(masked_Q, axis=1, keepdims=True))
-        pi = expQ / expQ.sum(axis=1, keepdims=True)
-
+        for i, Q_row in enumerate(Q_mtx):
+            idx_col = self.action_mask[i] > 0
+            Q_row = Q_row[idx_col]  # KZ: only keep feasible actions
+            expQ = np.exp(Q_row)
+            pi[i, idx_col] = expQ / np.sum(expQ)
         return pi
     
     def __repr__(self):
@@ -261,7 +310,7 @@ class System:
         group_travelers = self.group_travelers_by_departure() 
         for t, travelers in enumerate(group_travelers): 
             if len(travelers) != 0:
-                self.b_star[t], self.psi[t]  = self.determine_threshold_bid(travelers)
+                self.b_star[t], self.psi[t] = self.determine_threshold_bid(travelers)
                 self.assign_lanes(t, travelers)
                 count_slow_lane_users = sum(1 for traveler in travelers if not traveler.use_fast_lane)
                 self.update_queue_slow_lane(t, count_slow_lane_users)
