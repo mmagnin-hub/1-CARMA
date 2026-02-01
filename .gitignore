@@ -1,6 +1,9 @@
 /.vscode/
 
-/0-Simulation/figure.ipynb
+/0-Simulation/output_V0/
+/0-Simulation/output_V1/
+/0-Simulation/output_V2/
+/0-Simulation/output_V3/
 
 /1-Theory/
 
