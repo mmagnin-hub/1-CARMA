@@ -55,7 +55,6 @@ class TravelerGroup(TravelerBase):
         self.pi *= self.action_mask
         self.pi = self.pi / self.pi.sum(axis=1, keepdims=True)
 
-
     def register(self, traveler: 'Traveler'):
         self.travelers.append(traveler)
 
@@ -74,25 +73,19 @@ class TravelerGroup(TravelerBase):
             row_sum = self.P[row, :].sum()
             if row_sum > 0:
                 self.P[row, :] /= row_sum
-
         return
     
     def update_policy(self, system: 'System'):
-        # Computing the expected total reward from state (u,k) taking action (t,b)
+        # Computing the expected total reward from state (u,k) taking action (t,b), zeta
         self.immediate_reward(system)
         self.Q = self.zeta + self.delta * np.dot(self.P, self.V)
-        # # KZ: smooth Q-value instead of policy
-        # new_Q = self.zeta + self.delta * np.dot(self.P, self.V)
-        # self.Q = (1 - self.eta) * self.Q + self.eta * new_Q
 
-        # update policy
+        # Update policy with smoothing
         new_pi = self.policy_logit()
-        self.pi = (1 - self.eta) * self.pi + self.eta * new_pi # smoothing
-        # # KZ: use smoothed Q-value to compute policy
-        # self.pi = self.policy_logit()
+        self.pi = (1 - self.eta) * self.pi + self.eta * new_pi
 
-        # update value
-        Q_reshape = self.Q.reshape(self.U*(self.K+1), self.T*(self.K+1)) 
+        # Update value function
+        Q_reshape = self.Q.reshape(self.pi.shape) 
         self.V = np.sum(Q_reshape * self.pi, axis=1)
         return
     
@@ -100,7 +93,8 @@ class TravelerGroup(TravelerBase):
         '''
         TODO: add more matrix calculations to optimize
         '''
-        # OLD version (slow)
+
+        # OLD version (very slow)
         # # compute zeta
         # for u in range(self.U):
         #   for k in range(self.K+1):
@@ -229,7 +223,7 @@ class Traveler(TravelerBase):
         prob = self.group.pi[idx_row]
         idx_col = np.random.choice(self.group.T * (self.group.K+1), p=prob)
         self.t = idx_col // (self.group.K+1)
-        self.b = idx_col % (self.group.K+1) # MM : how to prevent bidding more karma than current balance ? -> already in pi ? 
+        self.b = idx_col % (self.group.K+1)
         return 
 
     def paid_karma_bid(self):

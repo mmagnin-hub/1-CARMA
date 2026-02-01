@@ -8,31 +8,26 @@ def main():
     # 1. Define model dimensions and parameters
     # -------------------------------------------------------------
     U = 2                 
-    # K = 200
-    T = 10            
-    delta_t = 1           
-    n_travelers = 100
+    T = 11            
+    delta_t = 1          
+    n_travelers = 600
     # KZ: preset initial karma balance
-    K = 50
-    k_init = 2
+    K = 100 # if this is not enough, the code will crash because out of bound index in the policy state
+    k_init = 10
 
     # Group preference = t_star ∈ {0,1,...,T-1}
     n_groups = 1
-    t_star = 6
-    phi = np.array([[0.7, 0.3],
-                    [0.9, 0.1]])
+    t_star = 8
+    phi = np.array([[0.8, 0.2],
+                    [0.8, 0.2]])
 
     u_value = np.array([1.0, 6.0]) # from the paper
-    delta = 0.9
-    eta = 0.1
-    alpha = 1 # queueing weight
-    beta = 0.35 # early arrival weight
-    gamma = 2 # late arrival weight
+    delta = 0.9 # discount factor  
+    eta = 0.1 # smoothing weight
+    alpha = 1.6 # queueing weight
+    beta = 1 # early arrival weight
+    gamma = 4 # late arrival weight
 
-    u_value_2 = np.array([1.0, 12.0])  
-    alpha_2 = 1
-    beta_2 = 0.1
-    gamma_2 = 5
     # -------------------------------------------------------------
     # 2. Create traveler groups
     # -------------------------------------------------------------
@@ -52,22 +47,7 @@ def main():
         gamma=gamma
     )
     groups.append(g1)
-
-    # g2 = TravelerGroup(
-    #     type_id=1,
-    #     phi=phi,
-    #     t_star=t_star,
-    #     u_value=u_value_2,
-    #     K=K,
-    #     T=T,
-    #     delta=delta,
-    #     eta=eta,
-    #     alpha=alpha_2,
-    #     beta=beta_2,
-    #     gamma=gamma_2
-    # )
-    # groups.append(g2)
-
+    # You can create more groups here if needed
     # -------------------------------------------------------------
     # 3. Create travelers and split across groups
     # -------------------------------------------------------------
@@ -77,7 +57,6 @@ def main():
     traveler_id = 0
     for group in groups:
         for _ in range(per_group):
-            # k_init = K // n_travelers
             traveler = Traveler(group=group, k_init=k_init, delta_t=delta_t, id=traveler_id)
             travelers.append(traveler)
             traveler_id += 1
@@ -85,9 +64,8 @@ def main():
     # -------------------------------------------------------------
     # 4. Initialize the System with all travelers
     # -------------------------------------------------------------
-    total_capacity = n_travelers // (T-1)
-    fast_lane_capacity = total_capacity // 3
-    slow_lane_capacity = total_capacity - fast_lane_capacity
+    fast_lane_capacity = 12 
+    slow_lane_capacity = 48
 
     system = System(
         fast_lane_capacity=fast_lane_capacity,
@@ -137,18 +115,23 @@ def main():
         for tr in travelers:
             tr.update_urgency()
 
-        # Update each group (independent policies)
+        # 6. Update each group (independent policies)
         for g in groups:
-            g.update_transition_matrix()
             g.update_policy(system)
+            g.update_transition_matrix()
 
-        # 6. Convergence
+
+        # 7. Convergence
         for g in groups:
             err = np.linalg.norm(g.pi - pi_old[:, :, g.traveler_type])
             print(f"Group {g.traveler_type} error:", err)
             error_vec[n_day, g.traveler_type] = err
             if err > threshold:
                 converge = False
+            
+        print("b_star of the day :", system.b_star) 
+        print("total b_star of the day :", np.sum(system.b_star)) 
+        print("total slow_lane_queue of the day :", np.sum(system.slow_lane_queue))
 
     # -------------------------------------------------------------
     # 6. Download results
