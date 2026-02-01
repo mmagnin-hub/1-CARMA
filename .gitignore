@@ -1,9 +1,6 @@
 /.vscode/
 
-/0-Simulation/output_V0/
-/0-Simulation/output_V1/
-/0-Simulation/output_V2/
-/0-Simulation/output_V3/
+/0-Simulation/output_*/
 
 /1-Theory/
 
